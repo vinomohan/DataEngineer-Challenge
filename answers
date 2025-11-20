@@ -1,1 +1,182 @@
+1] Create a query that calculates the average number of goals per game between 1900 and 2000.
+
+SELECT AVG(home_score + away_score) AS avg_goals_per_game FROM results WHERE date >= '1900-01-01' AND date < '2001-01-01';
+
+
+2]Create a query that counts the number of shootouts wins by country and arrange in alphabetical order.
+
+SELECT winner AS country, COUNT(*) AS shootout_wins FROM shootouts GROUP BY winner ORDER BY country;
+
+
+3]Create a reliable key that allows the joining together of goal scorers, results, and shootouts.
+
+Reliable Composite Keys are - date, home_team, away_team
+
+In results, this uniquely identifies a match.
+In goalscorers, every goal belongs to a match with the same date and teams.
+In shootouts, after converting its date field into match_date (DATE), the same attributes identify the match.
+This natural key allows all three tables to be joined consistently.
+
+Example using Join
+
+SELECT
+    r.date,
+    r.tournament,
+    r.home_team,
+    r.away_team,
+    r.home_score,
+    r.away_score,
+    g.scorer,
+    g.minute,
+    s.winner AS shootout_winner
+FROM results r
+LEFT JOIN goalscorers g
+       ON g.date      = r.date
+      AND g.home_team = r.home_team
+      AND g.away_team = r.away_team
+LEFT JOIN shootouts s
+       ON s.match_date = r.date
+      AND s.home_team  = r.home_team
+      AND s.away_team  = r.away_team;
+
+
+4]Create a query that identifies which teams have won a penalty shootout after a 1-1 draw.
+
+SELECT
+    r.date,
+    r.home_team,
+    r.away_team,
+    r.home_score,
+    r.away_score,
+    s.winner AS shootout_winner
+FROM
+    results r
+JOIN
+    shootouts s
+  ON r.date      = s.match_date
+ AND r.home_team = s.home_team
+ AND r.away_team = s.away_team
+WHERE
+    r.home_score = 1
+    AND r.away_score = 1;
+
+
+5]Create a query that identifies the top goal scorer by tournament, and what percentage that equates to for all goals scored in the tournament.
+
+WITH goals_by_player AS (
+    SELECT
+        r.tournament,
+        g.scorer,
+        COUNT(*) AS goals
+    FROM
+        goalscorers g
+    JOIN
+        results r
+          ON g.date      = r.date
+         AND g.home_team = r.home_team
+         AND g.away_team = r.away_team
+    GROUP BY
+        r.tournament,
+        g.scorer
+)
+
+SELECT
+    tournament,
+    scorer,
+    goals,
+    total_goals,
+    100.0 * goals / total_goals AS pct_of_tournament
+FROM (
+    SELECT
+        tournament,
+        scorer,
+        goals,
+        SUM(goals) OVER (PARTITION BY tournament) AS total_goals,
+        ROW_NUMBER() OVER (
+            PARTITION BY tournament
+            ORDER BY goals DESC, scorer ASC
+        ) AS rn
+    FROM
+        goals_by_player
+) ranked
+WHERE rn = 1
+ORDER BY tournament;
+
+
+
+Additional Questions
+
+1] Create and additional column that flags records with data quality issues
+
+1.1] Results Table
+
+ALTER TABLE results 
+ADD COLUMN data_quality_issue VARCHAR(255);
+
+UPDATE results
+SET data_quality_issue = CASE
+    WHEN date IS NULL THEN 'Missing date'
+    WHEN home_score < 0 OR away_score < 0 THEN 'Negative score'
+    ELSE NULL
+END;
+
+
+1.2] Shootouts table
+
+ALTER TABLE shootouts 
+ADD COLUMN data_quality_issue VARCHAR(255);
+
+UPDATE shootouts
+SET data_quality_issue = CASE
+    WHEN match_date IS NULL THEN 'Invalid or missing match_date'
+    WHEN winner NOT IN (home_team, away_team) 
+         THEN 'Winner not one of the teams'
+    ELSE NULL
+END;
+
+
+1.3] Goalscorers table
+
+ALTER TABLE goalscorers 
+ADD COLUMN data_quality_issue VARCHAR(255);
+
+UPDATE goalscorers
+SET data_quality_issue = CASE
+    WHEN minute <= 0 OR minute > 130 THEN 'Unrealistic minute'
+    WHEN scorer IS NULL OR scorer = '' THEN 'Missing scorer'
+    ELSE NULL
+END;
+
+
+
+2] Resolve the identified quality issues
+
+
+2.1] Convert shootouts.date into a proper DATE:
+UPDATE shootouts
+SET match_date = STR_TO_DATE(date, '%Y-%m-%d')
+WHERE match_date IS NULL;
+
+
+2.2] Fix winners that don’t match either team:
+UPDATE shootouts
+SET winner = home_team 
+WHERE winner NOT IN (home_team, away_team);
+
+2.3] Set invalid minutes to NULL:
+UPDATE goalscorers
+SET minute = NULL
+WHERE minute <= 0 OR minute > 130;
+
+2.4] Encoding fix
+UPDATE goalscorers
+SET scorer = CONVERT(CAST(scorer AS BINARY) USING utf8mb4);
+
+2.5] Clear resolved flags
+
+UPDATE results SET data_quality_issue = NULL WHERE data_quality_issue IS NOT NULL;
+UPDATE shootouts SET data_quality_issue = NULL WHERE data_quality_issue IS NOT NULL;
+UPDATE goalscorers SET data_quality_issue = NULL WHERE data_quality_issue IS NOT NULL;
+
+
 
